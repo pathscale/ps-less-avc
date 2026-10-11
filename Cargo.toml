@@ -1,12 +1,12 @@
 [package]
 name = "ps-less-avc"
-description = "Local fork of less-avc 0.1.5 for chuzz WebRTC: pure Rust H.264 encoding"
+description = "Fork of less-avc 0.1.5 for chuzz WebRTC: pure Rust H.264 encoding"
 version = "0.1.5"
 edition = "2021"
 authors = ["Andrew Straw <strawman@astraw.com>"]
 license = "MIT/Apache-2.0"
 categories = [ "multimedia::video" ]
-repository = "https://github.com/strawlab/less-avc"
+repository = "https://github.com/pathscale/ps-less-avc"
 
 [dependencies]
 bitvec = { version = "1.0.1", default-features = false, features = [ "alloc" ] }
