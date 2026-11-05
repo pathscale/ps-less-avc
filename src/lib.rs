@@ -150,11 +150,11 @@ impl std::fmt::Display for Error {
 
 #[inline]
 fn div_ceil(a: u32, b: u32) -> u32 {
-    // See https://stackoverflow.com/a/72442854
-    (a + b - 1) / b
+    a / b + u32::from(a % b != 0)
 }
 
 #[inline]
+#[cfg(test)]
 fn next_multiple(a: u32, b: u32) -> u32 {
     div_ceil(a, b) * b
 }

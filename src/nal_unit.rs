@@ -39,7 +39,12 @@ impl NalUnit {
         let max_nal_buf_size = calc_max_nal_buf_size(rbsp_size);
 
         let n_start = if with_frame { 5 } else { 1 };
-        let mut result = vec![0u8; n_start + max_nal_buf_size];
+        let result_size = n_start.checked_add(max_nal_buf_size).expect("NAL buffer size overflow");
+        let mut result = Vec::new();
+        result
+            .try_reserve_exact(result_size)
+            .expect("NAL buffer allocation failed");
+        result.resize(result_size, 0);
         if with_frame {
             result[..4].copy_from_slice(&[0x00, 0x00, 0x00, 0x01]);
         }
@@ -68,7 +73,9 @@ impl NalUnit {
 /// Calculate the maximum possible NAL buffer size for a given RBSP size.
 #[inline]
 fn calc_max_nal_buf_size(rbsp_size: usize) -> usize {
-    (div_ceil(rbsp_size as u32 * 3, 2) * 2).try_into().unwrap()
+    rbsp_size
+        .checked_add(rbsp_size / 2)
+        .expect("NAL buffer size overflow")
 }
 
 /// Convert Raw byte sequence payload (RBSP) data to Encapsulated Byte Sequence
