@@ -12,7 +12,12 @@ use super::*;
 /// An image in YCbCr format
 ///
 /// This references data stored elsewhere and provides only minimal metadata to
-/// describe the actual image data.
+/// describe the actual image data. The encoder reads complete padded
+/// macroblocks, so every byte in the padded rows and columns must be initialized
+/// before encoding. Those padding samples are included in the encoded stream
+/// even though the sequence parameter set crops the visible picture; callers
+/// should fill padding (for example, by replicating edge samples) before data
+/// crosses a trust boundary.
 ///
 /// The luma stride must be evenly divisible by 16 and the luma data size must
 /// have an integer multiple of 16 rows. For chroma, this number is 8.
@@ -76,31 +81,27 @@ impl<'a> YCbCrImage<'a> {
 
 impl<'a> DataPlane<'a> {
     pub(crate) fn check_sizes(&self, width: u32, height: u32, mb_sz: u32) -> Result<()> {
-        let (width_factor_num, width_factor_denom) = match self.bit_depth {
-            BitDepth::Depth8 => (1, 1),
-            BitDepth::Depth12 => (3, 2),
+        let fail = || Error::DataShapeProblem {
+            msg: "invalid or incomplete padded data plane",
+            #[cfg(feature = "backtrace")]
+            backtrace: Backtrace::capture(),
         };
-        // Check width
-        if self.stride
-            < next_multiple(width, mb_sz) as usize * width_factor_num / width_factor_denom
-        {
-            return Err(Error::DataShapeProblem {
-                msg: "stride too small",
-                #[cfg(feature = "backtrace")]
-                backtrace: Backtrace::capture(),
-            });
+        if width == 0 || height == 0 || self.stride == 0 || mb_sz == 0 {
+            return Err(fail());
         }
-        // check height
-        let num_rows = div_ceil(
-            self.data.len().try_into().unwrap(),
-            self.stride.try_into().unwrap(),
-        );
-        if num_rows < next_multiple(height, mb_sz) {
-            return Err(Error::DataShapeProblem {
-                msg: "number of rows too small",
-                #[cfg(feature = "backtrace")]
-                backtrace: Backtrace::capture(),
-            });
+
+        let block = u64::from(mb_sz);
+        let padded_width = (u64::from(width) + block - 1) / block * block;
+        let padded_height = (u64::from(height) + block - 1) / block * block;
+        let row_bytes = match self.bit_depth {
+            BitDepth::Depth8 => padded_width,
+            BitDepth::Depth12 => padded_width * 3 / 2,
+        };
+        let row_bytes = usize::try_from(row_bytes).map_err(|_| fail())?;
+        let rows = usize::try_from(padded_height).map_err(|_| fail())?;
+        let required = self.stride.checked_mul(rows).ok_or_else(fail)?;
+        if self.stride < row_bytes || self.data.len() < required {
+            return Err(fail());
         }
 
         Ok(())
