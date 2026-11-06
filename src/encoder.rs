@@ -209,7 +209,7 @@ impl LessEncoder {
             .ok_or_else(unsupported_size)?;
 
         // reserve space for frame without requiring reallocation
-        let row_sz = match y4m_frame.luma_bit_depth() {
+        let row_sz: usize = match y4m_frame.luma_bit_depth() {
             BitDepth::Depth8 => 16,
             BitDepth::Depth12 => 24,
         };

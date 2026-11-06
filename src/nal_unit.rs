@@ -38,7 +38,7 @@ impl NalUnit {
         let rbsp_size = rbsp_buf.len();
         let max_nal_buf_size = calc_max_nal_buf_size(rbsp_size);
 
-        let n_start = if with_frame { 5 } else { 1 };
+        let n_start: usize = if with_frame { 5 } else { 1 };
         let result_size = n_start.checked_add(max_nal_buf_size).expect("NAL buffer size overflow");
         let mut result = Vec::new();
         result
