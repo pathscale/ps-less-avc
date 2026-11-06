@@ -43,16 +43,13 @@ impl SupplementalEnhancementInformation {
         let (payload_type, payload) = match &self {
             Self::UserDataUnregistered(udr) => (5u8, udr.to_sei_payload()),
         };
-        let mut payload_size = payload.len();
-        let mut num_ff_bytes = 0;
-        while payload_size > 255 {
-            num_ff_bytes += 1;
-            payload_size -= 0xff;
-        }
+        let payload_size = payload.len();
+        let num_ff_bytes = payload_size / 0xff;
+        let last_payload_size_byte = (payload_size % 0xff) as u8;
         let mut result = vec![0xff; num_ff_bytes + 2];
         let size_idx = result.len() - 1;
         result[0] = payload_type;
-        result[size_idx] = payload_size.try_into().unwrap();
+        result[size_idx] = last_payload_size_byte;
 
         result.extend(payload);
         result.push(0x80); // rbsp_trailing_bits
