@@ -11,91 +11,77 @@ use std::io::Write;
 
 use super::{Error, LessEncoder, Result, YCbCrImage};
 
-/// An encoding session ready to start but which has not yet necessarily encoded
-/// its first frame.
-///
-/// This mainly exists to hold the writer but defer writing until we have the
-/// first frame (in the `Configured` variant). After the first frame is written,
-/// it will be in the `Recording` variant. (The `MovedOut` variant should never
-/// be observed and represents a temporary internal state.)
-enum WriteState<W> {
-    Configured(W),
-    Recording(RecordingState<W>),
-    MovedOut,
-}
-
-impl<W: Write> WriteState<W> {
-    fn write_frame(&mut self, frame: &YCbCrImage) -> Result<()> {
-        // Temporarily replace ourself with a dummy value.
-        let orig_state = std::mem::replace(self, WriteState::MovedOut);
-        let state = match orig_state {
-            WriteState::Configured(fd) => {
-                let (initial_nal_data, encoder) = LessEncoder::new(frame)?;
-                let mut state = RecordingState { wtr: fd, encoder };
-                state
-                    .wtr
-                    .write_all(&initial_nal_data.sps.to_annex_b_data())?;
-                state
-                    .wtr
-                    .write_all(&initial_nal_data.pps.to_annex_b_data())?;
-                state
-                    .wtr
-                    .write_all(&initial_nal_data.frame.to_annex_b_data())?;
-                state
-            }
-            WriteState::Recording(mut state) => {
-                let encoded = state.encoder.encode(frame)?;
-                state.wtr.write_all(&encoded.to_annex_b_data())?;
-                state
-            }
-            WriteState::MovedOut => {
-                return Err(Error::InconsistentState {
-                    #[cfg(feature = "backtrace")]
-                    backtrace: std::backtrace::Backtrace::capture(),
-                })
-            }
-        };
-
-        // Restore ourself to the correct state.
-        *self = WriteState::Recording(state);
-
-        Ok(())
-    }
-}
-
-/// Small helper struct holding writer and encoder for an ongoing encoding
-/// session.
-struct RecordingState<W> {
-    wtr: W,
-    encoder: LessEncoder,
-}
-
 /// Write images to an [std::io::Write] implementation in `.h264` file format.
 pub struct H264Writer<W> {
-    inner: WriteState<W>,
+    wtr: W,
+    encoder: Option<LessEncoder>,
+    io_failed: bool,
 }
 
 impl<W: Write> H264Writer<W> {
     /// Create a new [H264Writer] from an [std::io::Write] implementation.
     pub fn new(wtr: W) -> Result<Self> {
         Ok(Self {
-            inner: WriteState::Configured(wtr),
+            wtr,
+            encoder: None,
+            io_failed: false,
         })
     }
 
     /// Retrieve the underlying [std::io::Write] implementation.
     pub fn into_inner(self) -> W {
-        match self.inner {
-            WriteState::Configured(w) => w,
-            WriteState::Recording(state) => state.wtr,
-            WriteState::MovedOut => {
-                unreachable!("inconsistent internal state");
-            }
-        }
+        self.wtr
     }
 
-    /// Encode and write a frame
+    /// Encode and write a frame.
+    ///
+    /// Encoding errors leave the writer and encoding session available for a
+    /// corrected retry. Once I/O fails, the sink may contain a committed prefix;
+    /// later writes are rejected, while `into_inner` still returns the sink.
     pub fn write(&mut self, frame: &YCbCrImage) -> Result<()> {
-        self.inner.write_frame(frame)
+        if self.io_failed {
+            return Err(Error::InconsistentState {
+                #[cfg(feature = "backtrace")]
+                backtrace: std::backtrace::Backtrace::capture(),
+            });
+        }
+
+        if self.encoder.is_none() {
+            // Prepare the encoder and all three NALs before touching the sink.
+            let (initial, encoder) = LessEncoder::new(frame)?;
+            let sps = initial.sps.to_annex_b_data();
+            let pps = initial.pps.to_annex_b_data();
+            let picture = initial.frame.to_annex_b_data();
+
+            // Once sink I/O starts, a panic may still leave a committed prefix.
+            self.io_failed = true;
+            let write_result: Result<()> = (|| {
+                self.wtr.write_all(&sps)?;
+                self.wtr.write_all(&pps)?;
+                self.wtr.write_all(&picture)?;
+                Ok(())
+            })();
+            if let Err(error) = write_result {
+                return Err(error);
+            }
+            self.io_failed = false;
+            self.encoder = Some(encoder);
+            return Ok(());
+        }
+
+        // LessEncoder::encode validates and builds the NAL before any sink I/O.
+        let picture = self
+            .encoder
+            .as_mut()
+            .expect("encoder checked above")
+            .encode(frame)?
+            .to_annex_b_data();
+        // Keep the session terminal if sink I/O unwinds after committing a prefix.
+        self.io_failed = true;
+        if let Err(error) = self.wtr.write_all(&picture) {
+            return Err(error.into());
+        }
+        self.io_failed = false;
+        Ok(())
     }
 }
