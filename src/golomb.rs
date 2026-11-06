@@ -10,7 +10,7 @@
 use bitvec::prelude::{BitVec, Msb0};
 
 #[inline]
-fn num_bits(mut x: u32) -> u8 {
+fn num_bits(mut x: u64) -> u8 {
     if x == 0 {
         return 1;
     }
@@ -24,7 +24,7 @@ fn num_bits(mut x: u32) -> u8 {
 
 #[test]
 fn test_num_bits() {
-    for x in 0..100000 {
+    for x in 0u64..100000 {
         let nbits1 = format!("{:b}", x).len();
         let nbits2 = num_bits(x);
         assert_eq!(nbits1, nbits2 as usize);
@@ -35,7 +35,7 @@ fn test_num_bits() {
 ///
 /// See https://en.wikipedia.org/wiki/Exponential-Golomb_coding
 #[inline]
-fn bv_exp_golomb(bv: &mut BitVec<u8, Msb0>, x: u32) {
+fn bv_exp_golomb(bv: &mut BitVec<u8, Msb0>, x: u64) {
     let v = x + 1;
     let nbits = num_bits(v);
 
@@ -44,7 +44,7 @@ fn bv_exp_golomb(bv: &mut BitVec<u8, Msb0>, x: u32) {
 
     for i in 0..nbits {
         let shift = nbits - 1 - i;
-        let mask = 1u32 << shift;
+        let mask = 1u64 << shift;
         bv.push(v & mask != 0);
     }
 }
@@ -53,7 +53,7 @@ fn bv_exp_golomb(bv: &mut BitVec<u8, Msb0>, x: u32) {
 fn test_exp_goloumb() {
     fn exp_golomb(x: u32) -> Vec<bool> {
         let mut bv = BitVec::new();
-        bv_exp_golomb(&mut bv, x);
+        bv_exp_golomb(&mut bv, u64::from(x));
         let mut result = vec![];
         for b in bv {
             result.push(b);
@@ -84,10 +84,10 @@ fn test_exp_goloumb() {
 /// See https://en.wikipedia.org/wiki/Exponential-Golomb_coding
 #[inline]
 fn bv_signed_exp_golomb(bv: &mut BitVec<u8, Msb0>, x: i32) {
-    // this implementation is not very efficient.
+    // Widen before multiplication so the full i32 range maps without overflow.
+    let x = i64::from(x);
     let code = if x > 0 { 2 * x - 1 } else { -2 * x };
-    let code: u32 = code.try_into().unwrap();
-    bv_exp_golomb(bv, code);
+    bv_exp_golomb(bv, code as u64);
 }
 
 #[test]
@@ -120,6 +120,36 @@ fn test_signed_exp_goloumb() {
     );
 }
 
+#[test]
+fn test_full_width_exp_golomb_boundaries() {
+    fn assert_codeword(bits: &BitVec<u8, Msb0>, zero_prefix: usize, field: u64, total: usize) {
+        assert_eq!(bits.len(), total);
+        let observed_prefix = bits.iter().take_while(|bit| !**bit).count();
+        assert_eq!(observed_prefix, zero_prefix);
+        let observed_field = bits
+            .iter()
+            .skip(zero_prefix)
+            .fold(0u64, |value, bit| (value << 1) | if *bit { 1 } else { 0 });
+        assert_eq!(observed_field, field);
+    }
+
+    let mut bits = BitVec::new();
+    bits.extend_exp_golomb(u32::MAX);
+    assert_codeword(&bits, 32, 0x1_0000_0000, 65);
+
+    let mut bits = BitVec::new();
+    bits.extend_signed_exp_golomb(i32::MIN);
+    assert_codeword(&bits, 32, 0x1_0000_0001, 65);
+
+    let mut bits = BitVec::new();
+    bits.extend_signed_exp_golomb(i32::MAX);
+    assert_codeword(&bits, 31, 0xffff_fffe, 63);
+
+    let mut bits = BitVec::new();
+    bits.extend_signed_exp_golomb(-1_073_741_824);
+    assert_codeword(&bits, 31, 0x8000_0001, 63);
+}
+
 pub(crate) trait BitVecGolomb {
     fn extend_exp_golomb(&mut self, value: u32);
     fn extend_signed_exp_golomb(&mut self, value: i32);
@@ -127,7 +157,7 @@ pub(crate) trait BitVecGolomb {
 
 impl BitVecGolomb for BitVec<u8, Msb0> {
     fn extend_exp_golomb(&mut self, value: u32) {
-        bv_exp_golomb(self, value)
+        bv_exp_golomb(self, u64::from(value))
     }
     fn extend_signed_exp_golomb(&mut self, value: i32) {
         bv_signed_exp_golomb(self, value)
