@@ -42,26 +42,15 @@ impl LessEncoder {
 
         let bit_depth = y4m_frame.luma_bit_depth();
 
-        match (&y4m_frame.planes, &bit_depth, width % 4 == 0) {
-            (Planes::YCbCr(_), BitDepth::Depth12, false) => {
-                return Err(Error::DataShapeProblem {
-                    msg: "for bit depth 12 color, width must be divisible by 4",
-                    #[cfg(feature = "backtrace")]
-                    backtrace: Backtrace::capture(),
-                });
-            }
-            _ => {}
-        }
-
-        match (&y4m_frame.planes, &bit_depth, width % 2 == 0) {
-            (Planes::Mono(_), BitDepth::Depth8, false) | (_, _, true) => {}
-            (_, _, false) => {
-                return Err(Error::DataShapeProblem {
-                    msg: "width must be divisible by 2 (except mono8)",
-                    #[cfg(feature = "backtrace")]
-                    backtrace: Backtrace::capture(),
-                });
-            }
+        if matches!(&y4m_frame.planes, Planes::Mono(_))
+            && bit_depth == BitDepth::Depth12
+            && width % 2 != 0
+        {
+            return Err(Error::DataShapeProblem {
+                msg: "width must be divisible by 2 (except mono8)",
+                #[cfg(feature = "backtrace")]
+                backtrace: Backtrace::capture(),
+            });
         }
 
         #[allow(non_snake_case)]

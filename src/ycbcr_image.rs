@@ -61,6 +61,30 @@ pub struct DataPlane<'a> {
 
 impl<'a> YCbCrImage<'a> {
     pub(crate) fn check_sizes(&self) -> Result<()> {
+        if let Planes::YCbCr((y_plane, cb_plane, cr_plane)) = &self.planes {
+            let fail_shape = |msg: &'static str| Error::DataShapeProblem {
+                msg,
+                #[cfg(feature = "backtrace")]
+                backtrace: Backtrace::capture(),
+            };
+
+            if y_plane.bit_depth == BitDepth::Depth12 && self.width % 4 != 0 {
+                return Err(fail_shape("for bit depth 12 color, width must be divisible by 4"));
+            }
+            if self.width % 2 != 0 {
+                return Err(fail_shape("width must be divisible by 2 (except mono8)"));
+            }
+            if self.height % 2 != 0 {
+                return Err(Error::UnsupportedImageSize {
+                    #[cfg(feature = "backtrace")]
+                    backtrace: Backtrace::capture(),
+                });
+            }
+            if y_plane.bit_depth != cb_plane.bit_depth || y_plane.bit_depth != cr_plane.bit_depth {
+                return Err(fail_shape("YCbCr planes must have matching bit depths"));
+            }
+        }
+
         match &self.planes {
             Planes::Mono(y_plane) | Planes::YCbCr((y_plane, _, _)) => {
                 y_plane.check_sizes(self.width, self.height, 16)?;
