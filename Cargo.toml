@@ -22,3 +22,6 @@ backtrace = []
 std = []
 
 [workspace]
+
+[dev-dependencies]
+h264-reader = "0.7"
