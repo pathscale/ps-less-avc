@@ -9,7 +9,7 @@
 
 use std::io::Write;
 
-use super::{Error, LessEncoder, Result, YCbCrImage};
+use super::{nal_unit::NalUnit, Error, LessEncoder, Result, YCbCrImage};
 
 /// Write images to an [std::io::Write] implementation in `.h264` file format.
 pub struct H264Writer<W> {
@@ -35,10 +35,18 @@ impl<W: Write> H264Writer<W> {
 
     /// Encode and write a frame.
     ///
-    /// Encoding errors leave the writer and encoding session available for a
-    /// corrected retry. Once I/O fails, the sink may contain a committed prefix;
-    /// later writes are rejected, while `into_inner` still returns the sink.
+    /// Encoding and serialization errors leave the writer and encoding session
+    /// available for a retry. Once I/O fails, the sink may contain a committed
+    /// prefix. Later writes are rejected, while `into_inner` still returns the sink.
     pub fn write(&mut self, frame: &YCbCrImage) -> Result<()> {
+        self.write_with_serializer(frame, NalUnit::try_to_annex_b_data)
+    }
+
+    fn write_with_serializer(
+        &mut self,
+        frame: &YCbCrImage,
+        mut serialize: impl FnMut(&NalUnit) -> Result<Vec<u8>>,
+    ) -> Result<()> {
         if self.io_failed {
             return Err(Error::InconsistentState {
                 #[cfg(feature = "backtrace")]
@@ -49,9 +57,9 @@ impl<W: Write> H264Writer<W> {
         if self.encoder.is_none() {
             // Prepare the encoder and all three NALs before touching the sink.
             let (initial, encoder) = LessEncoder::new(frame)?;
-            let sps = initial.sps.to_annex_b_data();
-            let pps = initial.pps.to_annex_b_data();
-            let picture = initial.frame.to_annex_b_data();
+            let sps = serialize(&initial.sps)?;
+            let pps = serialize(&initial.pps)?;
+            let picture = serialize(&initial.frame)?;
 
             // Once sink I/O starts, a panic may still leave a committed prefix.
             self.io_failed = true;
@@ -69,13 +77,13 @@ impl<W: Write> H264Writer<W> {
             return Ok(());
         }
 
-        // LessEncoder::encode validates and builds the NAL before any sink I/O.
-        let picture = self
+        let nal = self
             .encoder
-            .as_mut()
+            .as_ref()
             .expect("encoder checked above")
-            .encode(frame)?
-            .to_annex_b_data();
+            .encode_frame(frame)?;
+        let picture = serialize(&nal)?;
+        drop(nal);
         // Keep the session terminal if sink I/O unwinds after committing a prefix.
         self.io_failed = true;
         if let Err(error) = self.wtr.write_all(&picture) {
@@ -84,4 +92,59 @@ impl<W: Write> H264Writer<W> {
         self.io_failed = false;
         Ok(())
     }
+}
+
+#[test]
+fn serialization_errors_leave_sink_and_session_recoverable() {
+    use crate::{
+        ycbcr_image::{DataPlane, Planes},
+        BitDepth,
+    };
+
+    fn mono8(data: &[u8]) -> YCbCrImage<'_> {
+        YCbCrImage {
+            planes: Planes::Mono(DataPlane {
+                data,
+                stride: 16,
+                bit_depth: BitDepth::Depth8,
+            }),
+            width: 16,
+            height: 16,
+        }
+    }
+
+    let capacity_failure = || Error::UnsupportedImageSize {
+        #[cfg(feature = "backtrace")]
+        backtrace: std::backtrace::Backtrace::disabled(),
+    };
+    let first_data = [0x31; 256];
+    let next_data = [0x72; 256];
+    let first = mono8(&first_data);
+    let next = mono8(&next_data);
+    let mut writer = H264Writer::new(Vec::new()).unwrap();
+    let mut clean = H264Writer::new(Vec::new()).unwrap();
+
+    let mut calls = 0;
+    let failure = writer.write_with_serializer(&first, |nal| {
+        calls += 1;
+        if calls == 3 {
+            Err(capacity_failure())
+        } else {
+            nal.try_to_annex_b_data()
+        }
+    });
+    assert!(matches!(failure, Err(Error::UnsupportedImageSize { .. })));
+    assert!(writer.wtr.is_empty());
+
+    writer.write(&first).unwrap();
+    clean.write(&first).unwrap();
+    assert_eq!(writer.wtr, clean.wtr);
+
+    let failure = writer.write_with_serializer(&next, |_| Err(capacity_failure()));
+    assert!(matches!(failure, Err(Error::UnsupportedImageSize { .. })));
+    assert_eq!(writer.wtr, clean.wtr);
+
+    writer.write(&next).unwrap();
+    clean.write(&next).unwrap();
+    assert_eq!(writer.into_inner(), clean.into_inner());
 }

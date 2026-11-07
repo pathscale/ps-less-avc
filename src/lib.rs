@@ -17,7 +17,6 @@
 //! and 12 in monochrome and YCbCr colorspaces are supported. Tests ensure that
 //! data is losslessly encoded.
 #![cfg_attr(not(feature = "std"), no_std)]
-#![cfg_attr(feature = "backtrace", feature(error_generic_member_access))]
 #![deny(unsafe_code)]
 
 #[cfg(not(feature = "std"))]
@@ -126,7 +125,7 @@ impl std::fmt::Display for Error {
                 #[cfg(feature = "backtrace")]
                     backtrace: _,
             } => {
-                write!(f, "unsupported image size: even width and height required")
+                write!(f, "unsupported image size or insufficient buffer capacity")
             }
             Error::InconsistentState {
                 #[cfg(feature = "backtrace")]
@@ -896,7 +895,7 @@ mod tests {
         assert_eq!(decode_nal(nal_with_escape).unwrap().deref(), rbsp);
 
         let mut nal2 = vec![0u8; rbsp.len() * 3];
-        let sz = rbsp_to_ebsp(rbsp, &mut nal2);
+        let sz = rbsp_to_ebsp(rbsp, &mut nal2).unwrap();
         nal2.truncate(sz);
         nal2.insert(0, 0); // `decode_nal` needs first byte
 

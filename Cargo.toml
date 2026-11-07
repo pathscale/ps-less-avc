@@ -18,7 +18,7 @@ name = "less_avc"
 [features]
 default = [ "std" ]
 
-backtrace = []
+backtrace = [ "std" ]
 std = []
 
 [workspace]
