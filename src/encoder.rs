@@ -142,7 +142,7 @@ impl LessEncoder {
         let mbs_width = (pic_width_in_mbs_minus1 + 1).try_into().unwrap();
         let mbs_height = (pic_height_in_map_units_minus1 + 1).try_into().unwrap();
 
-        let mut self_ = Self {
+        let self_ = Self {
             width,
             height,
             bit_depth,
@@ -153,7 +153,7 @@ impl LessEncoder {
             pps,
         };
 
-        let frame_nal_unit = self_.encode(y4m_frame)?;
+        let frame_nal_unit = self_.encode_frame(y4m_frame)?;
         let nal_units = InitialNalUnits {
             sps: sps_nal_unit,
             pps: pps_nal_unit,
@@ -164,6 +164,10 @@ impl LessEncoder {
 
     /// Encode a frame, converting an input image [YCbCrImage] into [NalUnit].
     pub fn encode(&mut self, y4m_frame: &YCbCrImage) -> Result<NalUnit> {
+        self.encode_frame(y4m_frame)
+    }
+
+    pub(crate) fn encode_frame(&self, y4m_frame: &YCbCrImage) -> Result<NalUnit> {
         let monochrome = matches!(&y4m_frame.planes, Planes::Mono(_));
         let depths_match = match &y4m_frame.planes {
             Planes::Mono(_) => true,

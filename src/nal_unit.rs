@@ -29,61 +29,83 @@ impl NalUnit {
         }
     }
 
-    fn to_buf(&self, with_frame: bool) -> Vec<u8> {
+    fn try_to_buf(&self, with_start_code: bool) -> Result<Vec<u8>> {
         #[allow(clippy::identity_op)]
         // forbidden_zero_bit = 0
         let nal_byte = 0x00 | (self.ref_idc.nal_ref_idc() << 5) | self.unit_type.nal_unit_type();
 
         let rbsp_buf = &self.rbsp_data.data;
-        let rbsp_size = rbsp_buf.len();
-        let max_nal_buf_size = calc_max_nal_buf_size(rbsp_size);
-
-        let n_start: usize = if with_frame { 5 } else { 1 };
-        let result_size = n_start.checked_add(max_nal_buf_size).expect("NAL buffer size overflow");
+        let header_size = if with_start_code { 5 } else { 1 };
+        let result_size = calc_serialized_buf_size(rbsp_buf.len(), header_size)?;
         let mut result = Vec::new();
         result
             .try_reserve_exact(result_size)
-            .expect("NAL buffer allocation failed");
+            .map_err(|_| capacity_error())?;
         result.resize(result_size, 0);
-        if with_frame {
+        if with_start_code {
             result[..4].copy_from_slice(&[0x00, 0x00, 0x00, 0x01]);
         }
-        result[n_start - 1] = nal_byte;
+        result[header_size - 1] = nal_byte;
 
-        let nal_buf_sz = rbsp_to_ebsp(&self.rbsp_data.data, &mut result[n_start..]);
-        let final_sz = n_start + nal_buf_sz;
-        result.truncate(final_sz);
+        let nal_buf_sz = rbsp_to_ebsp(rbsp_buf, &mut result[header_size..])?;
+        result.truncate(header_size + nal_buf_sz);
 
-        result
+        Ok(result)
     }
 
-    /// Return a single "naked" NAL unit.
+    /// Return the NAL header followed by the EBSP.
     ///
-    /// This is the encapsulated byte sequence payload (EBSP) without NALU
-    /// Header.
+    /// Panics if the output buffer cannot be allocated.
     pub fn to_nal_unit(&self) -> Vec<u8> {
-        self.to_buf(false)
+        self.try_to_nal_unit().expect("NAL unit serialization failed")
     }
+
+    /// Return the NAL header followed by the EBSP.
+    ///
+    /// Returns [Error::UnsupportedImageSize] if output sizing or reservation fails.
+    pub fn try_to_nal_unit(&self) -> Result<Vec<u8>> {
+        self.try_to_buf(false)
+    }
+
     /// Return a single NAL unit encoded for direct saving to `.h264` file.
+    ///
+    /// Panics if the output buffer cannot be allocated.
     pub fn to_annex_b_data(&self) -> Vec<u8> {
-        self.to_buf(true)
+        self.try_to_annex_b_data()
+            .expect("Annex B serialization failed")
+    }
+
+    /// Return a four-byte Annex B start code followed by the NAL header and EBSP.
+    ///
+    /// Returns [Error::UnsupportedImageSize] if output sizing or reservation fails.
+    pub fn try_to_annex_b_data(&self) -> Result<Vec<u8>> {
+        self.try_to_buf(true)
     }
 }
 
-/// Calculate the maximum possible NAL buffer size for a given RBSP size.
+fn capacity_error() -> Error {
+    // Capturing a backtrace could allocate after a failed reservation.
+    Error::UnsupportedImageSize {
+        #[cfg(feature = "backtrace")]
+        backtrace: Backtrace::disabled(),
+    }
+}
+
+/// Calculate the maximum serialized buffer size for a given RBSP size.
 #[inline]
-fn calc_max_nal_buf_size(rbsp_size: usize) -> usize {
+fn calc_serialized_buf_size(rbsp_size: usize, header_size: usize) -> Result<usize> {
     rbsp_size
         .checked_add(rbsp_size / 2)
-        .expect("NAL buffer size overflow")
+        .and_then(|payload_size| header_size.checked_add(payload_size))
+        .ok_or_else(capacity_error)
 }
 
 /// Convert Raw byte sequence payload (RBSP) data to Encapsulated Byte Sequence
 /// Payload (EBSP) bytes.
-pub(crate) fn rbsp_to_ebsp(rbsp_buf: &[u8], nal_buf: &mut [u8]) -> usize {
-    let rbsp_size = rbsp_buf.len();
-    let max_nal_buf_size = calc_max_nal_buf_size(rbsp_size);
-    assert!(nal_buf.len() >= max_nal_buf_size);
+pub(crate) fn rbsp_to_ebsp(rbsp_buf: &[u8], nal_buf: &mut [u8]) -> Result<usize> {
+    if nal_buf.len() < calc_serialized_buf_size(rbsp_buf.len(), 0)? {
+        return Err(capacity_error());
+    }
     let mut dest_len = 0;
 
     let mut input_buf = rbsp_buf;
@@ -131,7 +153,7 @@ pub(crate) fn rbsp_to_ebsp(rbsp_buf: &[u8], nal_buf: &mut [u8]) -> usize {
         dest_len += input_buf.len();
     }
 
-    dest_len
+    Ok(dest_len)
 }
 
 #[inline]
@@ -199,13 +221,52 @@ fn test_nal_encoding_roundtrip() {
         vec![0x68, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04],
     ];
     for orig in test_vecs.iter() {
-        let mut encoded = vec![0u8; calc_max_nal_buf_size(orig.len())];
-        let sz = rbsp_to_ebsp(orig, &mut encoded);
+        let mut encoded = vec![0u8; calc_serialized_buf_size(orig.len(), 0).unwrap()];
+        let sz = rbsp_to_ebsp(orig, &mut encoded).unwrap();
         encoded.truncate(sz);
 
         let decoded = h264_reader::rbsp::decode_nal(&encoded).unwrap();
         assert_eq!(&orig.as_slice()[1..], decoded.as_ref());
     }
+}
+
+#[test]
+fn serialized_size_overflow_is_reported() {
+    for (rbsp_size, header_size) in [(usize::MAX, 0), (1, usize::MAX)] {
+        assert!(matches!(
+            calc_serialized_buf_size(rbsp_size, header_size),
+            Err(Error::UnsupportedImageSize { .. })
+        ));
+    }
+}
+
+#[test]
+fn rbsp_conversion_rejects_a_short_buffer_without_writing() {
+    let mut output = [0xaa; 3];
+    assert!(matches!(
+        rbsp_to_ebsp(&[0x00, 0x00, 0x01], &mut output),
+        Err(Error::UnsupportedImageSize { .. })
+    ));
+    assert_eq!(output, [0xaa; 3]);
+}
+
+#[test]
+fn serializers_emit_expected_header_and_escaped_payload() {
+    let nal = NalUnit::new(
+        NalRefIdc::One,
+        NalUnitType::CodedSliceOfAnIDRPicture,
+        RbspData {
+            data: vec![0x00, 0x00, 0x01, 0x00, 0x00, 0x03, 0x80],
+        },
+    );
+
+    let expected_nal = [0x25, 0x00, 0x00, 0x03, 0x01, 0x00, 0x00, 0x03, 0x03, 0x80];
+    assert_eq!(nal.try_to_nal_unit().unwrap().as_slice(), &expected_nal);
+    assert_eq!(nal.to_nal_unit().as_slice(), &expected_nal);
+
+    let annex_b = nal.try_to_annex_b_data().unwrap();
+    assert_eq!(&annex_b[..4], &[0x00, 0x00, 0x00, 0x01]);
+    assert_eq!(&annex_b[4..], &expected_nal);
 }
 
 /// Possible values for the `nal_ref_idc` field in the `nal_unit`.
