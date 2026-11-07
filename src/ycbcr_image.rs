@@ -12,12 +12,10 @@ use super::*;
 /// An image in YCbCr format
 ///
 /// This references data stored elsewhere and provides only minimal metadata to
-/// describe the actual image data. The encoder reads complete padded
-/// macroblocks, so every byte in the padded rows and columns must be initialized
-/// before encoding. Those padding samples are included in the encoded stream
-/// even though the sequence parameter set crops the visible picture; callers
-/// should fill padding (for example, by replicating edge samples) before data
-/// crosses a trust boundary.
+/// describe the actual image data. The encoder emits complete padded
+/// macroblocks, while the sequence parameter set crops the visible picture.
+/// Samples outside the visible width or height are encoded as zero, regardless
+/// of the contents of the padded rows and columns.
 ///
 /// The luma stride must be evenly divisible by 16 and the luma data size must
 /// have an integer multiple of 16 rows. For chroma, this number is 8.
@@ -69,7 +67,9 @@ impl<'a> YCbCrImage<'a> {
             };
 
             if y_plane.bit_depth == BitDepth::Depth12 && self.width % 4 != 0 {
-                return Err(fail_shape("for bit depth 12 color, width must be divisible by 4"));
+                return Err(fail_shape(
+                    "for bit depth 12 color, width must be divisible by 4",
+                ));
             }
             if self.width % 2 != 0 {
                 return Err(fail_shape("width must be divisible by 2 (except mono8)"));
