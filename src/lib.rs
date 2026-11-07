@@ -664,17 +664,30 @@ fn copy_to_macroblock_8bit(
     src_plane: &DataPlane,
     dest: &mut Vec<u8>,
     dest_sz: usize,
+    visible_width: usize,
+    visible_height: usize,
 ) {
     // `dest_sz` will be 16 when copying luma block and 8 when copying 4:2:0
     // chroma block.
     let src_data = src_plane.data;
     let src_stride = src_plane.stride;
-    for src_row in (mbs_row * dest_sz)..((mbs_row + 1) * dest_sz) {
-        // This copies beyond end of source pixel data but still within source
-        // buffer.
-        let row_chunk = &src_data[src_row * src_stride..(src_row + 1) * src_stride];
-        let chunk = &row_chunk[mbs_col * dest_sz..(mbs_col + 1) * dest_sz];
-        dest.extend(chunk);
+    let block_x = mbs_col * dest_sz;
+    for row_in_block in 0..dest_sz {
+        let src_row = mbs_row * dest_sz + row_in_block;
+        let copy_len = visible_width.saturating_sub(block_x).min(dest_sz);
+        if src_row < visible_height && copy_len > 0 {
+            let start = src_row * src_stride + block_x;
+            dest.extend_from_slice(&src_data[start..start + copy_len]);
+        }
+        dest.resize(
+            dest.len() + dest_sz
+                - if src_row < visible_height {
+                    copy_len
+                } else {
+                    0
+                },
+            0,
+        );
     }
 }
 
@@ -685,18 +698,34 @@ fn copy_to_macroblock_12bit(
     src_plane: &DataPlane,
     dest: &mut Vec<u8>,
     dest_sz: usize,
+    visible_width: usize,
+    visible_height: usize,
 ) {
     // `dest_sz` will be 24 when copying luma block and 12 when copying 4:2:0
     // chroma block.
     let src_data = src_plane.data;
     let src_stride = src_plane.stride;
     let src_sz = dest_sz / 3 * 2;
-    for src_row in (mbs_row * src_sz)..((mbs_row + 1) * src_sz) {
-        // This copies beyond end of source pixel data but still within source
-        // buffer.
-        let row_chunk = &src_data[src_row * src_stride..(src_row + 1) * src_stride];
-        let chunk = &row_chunk[mbs_col * dest_sz..(mbs_col + 1) * dest_sz];
-        dest.extend(chunk);
+    let block_x = mbs_col * src_sz;
+    let visible_row_bytes = visible_width * 3 / 2;
+    for row_in_block in 0..src_sz {
+        let src_row = mbs_row * src_sz + row_in_block;
+        let copy_len = visible_row_bytes
+            .saturating_sub(block_x * 3 / 2)
+            .min(dest_sz);
+        if src_row < visible_height && copy_len > 0 {
+            let start = src_row * src_stride + block_x * 3 / 2;
+            dest.extend_from_slice(&src_data[start..start + copy_len]);
+        }
+        dest.resize(
+            dest.len() + dest_sz
+                - if src_row < visible_height {
+                    copy_len
+                } else {
+                    0
+                },
+            0,
+        );
     }
 }
 
@@ -717,10 +746,26 @@ fn macroblock(
     match &y4m_frame.planes {
         Planes::Mono(y_plane) | Planes::YCbCr((y_plane, _, _)) => match y_plane.bit_depth {
             BitDepth::Depth8 => {
-                copy_to_macroblock_8bit(mbs_row, mbs_col, y_plane, &mut result.data, 16);
+                copy_to_macroblock_8bit(
+                    mbs_row,
+                    mbs_col,
+                    y_plane,
+                    &mut result.data,
+                    16,
+                    y4m_frame.width as usize,
+                    y4m_frame.height as usize,
+                );
             }
             BitDepth::Depth12 => {
-                copy_to_macroblock_12bit(mbs_row, mbs_col, y_plane, &mut result.data, 24);
+                copy_to_macroblock_12bit(
+                    mbs_row,
+                    mbs_col,
+                    y_plane,
+                    &mut result.data,
+                    24,
+                    y4m_frame.width as usize,
+                    y4m_frame.height as usize,
+                );
             }
         },
     }
@@ -739,12 +784,44 @@ fn macroblock(
             assert_eq!(u_plane.bit_depth, v_plane.bit_depth);
             match u_plane.bit_depth {
                 BitDepth::Depth8 => {
-                    copy_to_macroblock_8bit(mbs_row, mbs_col, u_plane, &mut result.data, 8);
-                    copy_to_macroblock_8bit(mbs_row, mbs_col, v_plane, &mut result.data, 8);
+                    copy_to_macroblock_8bit(
+                        mbs_row,
+                        mbs_col,
+                        u_plane,
+                        &mut result.data,
+                        8,
+                        (y4m_frame.width / 2) as usize,
+                        (y4m_frame.height / 2) as usize,
+                    );
+                    copy_to_macroblock_8bit(
+                        mbs_row,
+                        mbs_col,
+                        v_plane,
+                        &mut result.data,
+                        8,
+                        (y4m_frame.width / 2) as usize,
+                        (y4m_frame.height / 2) as usize,
+                    );
                 }
                 BitDepth::Depth12 => {
-                    copy_to_macroblock_12bit(mbs_row, mbs_col, u_plane, &mut result.data, 12);
-                    copy_to_macroblock_12bit(mbs_row, mbs_col, v_plane, &mut result.data, 12);
+                    copy_to_macroblock_12bit(
+                        mbs_row,
+                        mbs_col,
+                        u_plane,
+                        &mut result.data,
+                        12,
+                        (y4m_frame.width / 2) as usize,
+                        (y4m_frame.height / 2) as usize,
+                    );
+                    copy_to_macroblock_12bit(
+                        mbs_row,
+                        mbs_col,
+                        v_plane,
+                        &mut result.data,
+                        12,
+                        (y4m_frame.width / 2) as usize,
+                        (y4m_frame.height / 2) as usize,
+                    );
                 }
             }
         }
