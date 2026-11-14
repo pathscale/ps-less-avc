@@ -10,7 +10,6 @@ repository = "https://github.com/pathscale/ps-less-avc"
 
 [dependencies]
 bitvec = { version = "1.0.1", default-features = false, features = [ "alloc" ] }
-memchr = { version = "2.5.0", default-features = false }
 
 [lib]
 name = "less_avc"

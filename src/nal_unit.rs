@@ -110,7 +110,7 @@ pub(crate) fn rbsp_to_ebsp(rbsp_buf: &[u8], nal_buf: &mut [u8]) -> Result<usize>
 
     let mut input_buf = rbsp_buf;
 
-    while let Some(first_idx) = memchr::memchr(0x00, input_buf) {
+    while let Some(first_idx) = input_buf.iter().position(|&b| b == 0x00) {
         if first_idx + 1 < input_buf.len() {
             // more input exists
             if input_buf[first_idx + 1] == 0x00 {
